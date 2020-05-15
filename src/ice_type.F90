@@ -6,11 +6,14 @@ use mpp_domains_mod,  only: domain2D, mpp_get_compute_domain, CORNER, EAST, NORT
                             mpp_get_global_domain
 use mpp_parameter_mod, only: CGRID_NE, BGRID_NE, AGRID
 use fms_mod,          only: open_namelist_file, check_nml_error, stdout
-use fms2_io_mod, only : register_restart_field, check_if_open, register_variable_attribute, &
-                        write_data, get_dimension_names, get_num_dimensions, read_data, &
+use fms2_io_mod, only : fms2_register_restart_field=>register_restart_field, &
+                        check_if_open, register_variable_attribute, read_data, &
+                        write_data, get_dimension_names, get_num_dimensions, &
                         write_restart, fms2_open_file=>open_file, file_exists, &
                         get_dimension_size, variable_exists, dimension_exists, &
                         FmsNetcdfDomainFile_t, unlimited, register_field, is_registered_to_restart
+use fms_io_mod,       only: save_restart, restore_state, query_initialized
+use fms_io_mod,       only: register_restart_field, restart_file_type
 use coupler_types_mod,only: coupler_1d_bc_type, coupler_2d_bc_type, coupler_3d_bc_type
 use coupler_types_mod,only: coupler_type_spawn, coupler_type_write_chksums
 
@@ -39,6 +42,16 @@ public :: ice_data_type, dealloc_ice_arrays
 public :: ice_type_slow_reg_restarts, ice_type_fast_reg_restarts
 public :: ice_model_restart, ice_stock_pe, ice_data_type_chksum
 public :: Ice_public_type_chksum, Ice_public_type_bounds_check
+
+interface ice_type_slow_reg_restarts
+  module procedure ice_type_slow_reg_restarts_new_io
+  module procedure ice_type_slow_reg_restarts_old_io
+end interface ice_type_slow_reg_restarts
+
+interface ice_type_fast_reg_restarts
+  module procedure ice_type_fast_reg_restarts_new_io
+  module procedure ice_type_fast_reg_restarts_old_io
+end interface ice_type_fast_reg_restarts
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> This structure contains the ice model data (some used by calling routines);   !
@@ -158,6 +171,10 @@ type ice_data_type !  ice_public_type
           !< A pointer to the SIS slow ice update control structure
   type(unit_scale_type), pointer :: US => NULL()
           !< structure containing various unit conversion factors
+  type(restart_file_type), pointer :: Ice_restart => NULL()
+          !< A pointer to the slow ice restart control structure
+  type(restart_file_type), pointer :: Ice_fast_restart => NULL()
+          !< A pointer to the fast ice restart control structure
 end type ice_data_type !  ice_public_type
 
 contains
@@ -166,7 +183,7 @@ contains
 !> ice_type_slow_reg_restarts allocates the arrays in the ice_data_type that are
 !! predominantly associated with the slow processors, and register any variables
 !! in the ice data type that need to be included in the slow ice restart files.
-subroutine ice_type_slow_reg_restarts(domain, CatIce, param_file, Ice, restart_fileobj, &
+subroutine ice_type_slow_reg_restarts_new_io(domain, CatIce, param_file, Ice, restart_fileobj, &
                                       restart_file, nc_mode, gas_fluxes)
   type(domain2d),          intent(in)    :: domain   !< The ice models' FMS domain type
   integer,                 intent(in)    :: CatIce   !< The number of ice thickness categories
@@ -276,38 +293,38 @@ subroutine ice_type_slow_reg_restarts(domain, CatIce, param_file, Ice, restart_f
           call write_restart_axis(restart_fileobj, trim(dim_names(i)), axis_length=dim_lengths(i))
       endif
     enddo
-    call register_restart_field(restart_fileobj, 'flux_u',      Ice%flux_u,    dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'flux_v',      Ice%flux_v,    dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'flux_t',      Ice%flux_t,    dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'flux_q',      Ice%flux_q,    dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'flux_salt',   Ice%flux_salt, dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'flux_lw',     Ice%flux_lw,   dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'lprec',       Ice%lprec,     dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'fprec',       Ice%fprec,     dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'runoff',      Ice%runoff,    dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'calving',     Ice%calving,   dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'runoff_hflx', Ice%runoff_hflx, &
+    call fms2_register_restart_field(restart_fileobj, 'flux_u',      Ice%flux_u,    dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'flux_v',      Ice%flux_v,    dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'flux_t',      Ice%flux_t,    dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'flux_q',      Ice%flux_q,    dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'flux_salt',   Ice%flux_salt, dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'flux_lw',     Ice%flux_lw,   dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'lprec',       Ice%lprec,     dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'fprec',       Ice%fprec,     dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'runoff',      Ice%runoff,    dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'calving',     Ice%calving,   dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'runoff_hflx', Ice%runoff_hflx, &
                                 dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'calving_hflx', Ice%calving_hflx, &
+    call fms2_register_restart_field(restart_fileobj, 'calving_hflx', Ice%calving_hflx, &
                                 dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'p_surf',      Ice%p_surf,    dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'flux_sw_vis_dir', Ice%flux_sw_vis_dir, &
+    call fms2_register_restart_field(restart_fileobj, 'p_surf',      Ice%p_surf,    dimensions=dim_names)
+    call fms2_register_restart_field(restart_fileobj, 'flux_sw_vis_dir', Ice%flux_sw_vis_dir, &
                                 dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'flux_sw_vis_dif', Ice%flux_sw_vis_dif, &
+    call fms2_register_restart_field(restart_fileobj, 'flux_sw_vis_dif', Ice%flux_sw_vis_dif, &
                                 dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'flux_sw_nir_dir', Ice%flux_sw_nir_dir, &
+    call fms2_register_restart_field(restart_fileobj, 'flux_sw_nir_dir', Ice%flux_sw_nir_dir, &
                                 dimensions=dim_names)
-    call register_restart_field(restart_fileobj, 'flux_sw_nir_dif', Ice%flux_sw_nir_dif, &
+    call fms2_register_restart_field(restart_fileobj, 'flux_sw_nir_dif', Ice%flux_sw_nir_dif, &
                                 dimensions=dim_names)
     if (Ice%sCS%pass_stress_mag) &
-      call register_restart_field(restart_fileobj, 'stress_mag', Ice%stress_mag, &
+      call fms2_register_restart_field(restart_fileobj, 'stress_mag', Ice%stress_mag, &
                                    dimensions=dim_names)
     if (Ice%sCS%pass_iceberg_area_to_ocean) then
-      call register_restart_field(restart_fileobj, 'ustar_berg', Ice%ustar_berg, &
+      call fms2_register_restart_field(restart_fileobj, 'ustar_berg', Ice%ustar_berg, &
                                    dimensions=dim_names)
-      call register_restart_field(restart_fileobj, 'area_berg', Ice%area_berg, &
+      call fms2_register_restart_field(restart_fileobj, 'area_berg', Ice%area_berg, &
                                    dimensions=dim_names)
-      call register_restart_field(restart_fileobj, 'mass_berg', Ice%mass_berg, &
+      call fms2_register_restart_field(restart_fileobj, 'mass_berg', Ice%mass_berg, &
                                    dimensions=dim_names)
     endif
   elseif (trim(nc_mode) .eq. "read") then
@@ -317,38 +334,30 @@ subroutine ice_type_slow_reg_restarts(domain, CatIce, param_file, Ice, restart_f
       if (.not.(file_open_success)) call SIS_error(FATAL,'ice_type::ice_type_slow_reg_restarts: '// &
                                       'Unable to open file '//trim(restart_file))
     endif
-    !call mpp_get_global_domain(domain, xbegin=isg, ybegin=jsg, xend=ieg, yend=jeg, position=CENTER)
-    !last(1) = iec-isg+1
-    !last(2) = jec-jsg+1
-    !first(1) = isc-isg+1
-    !first(2) = jsc-jsg+1
-    !nread(1) = last(1)-first(1)+1
-    !nread(2) = last(2)-first(2)+1
-    call register_restart_field(restart_fileobj, 'flux_u',      Ice%flux_u)
-    !call register_field(restart_fileobj, 'flux_u', dimensions=(/'x_axis1','y)
-    !call read_data(restart_fileobj, 'flux_u', Ice%flux_u(first(1):last(1), first(2):last(2)))
-    call register_restart_field(restart_fileobj, 'flux_v',      Ice%flux_v)
-    call register_restart_field(restart_fileobj, 'flux_t',      Ice%flux_t)
-    call register_restart_field(restart_fileobj, 'flux_q',      Ice%flux_q)
-    call register_restart_field(restart_fileobj, 'flux_salt',   Ice%flux_salt)
-    call register_restart_field(restart_fileobj, 'flux_lw',     Ice%flux_lw)
-    call register_restart_field(restart_fileobj, 'lprec',       Ice%lprec)
-    call register_restart_field(restart_fileobj, 'fprec',       Ice%fprec)
-    call register_restart_field(restart_fileobj, 'runoff',      Ice%runoff)
-    call register_restart_field(restart_fileobj, 'calving',     Ice%calving)
-    call register_restart_field(restart_fileobj, 'runoff_hflx', Ice%runoff_hflx)
-    call register_restart_field(restart_fileobj, 'calving_hflx', Ice%calving_hflx)
-    call register_restart_field(restart_fileobj, 'p_surf',      Ice%p_surf)
-    call register_restart_field(restart_fileobj, 'flux_sw_vis_dir', Ice%flux_sw_vis_dir)
-    call register_restart_field(restart_fileobj, 'flux_sw_vis_dif', Ice%flux_sw_vis_dif)
-    call register_restart_field(restart_fileobj, 'flux_sw_nir_dir', Ice%flux_sw_nir_dir)
-    call register_restart_field(restart_fileobj, 'flux_sw_nir_dif', Ice%flux_sw_nir_dif)
+
+    call fms2_register_restart_field(restart_fileobj, 'flux_u',      Ice%flux_u)
+    call fms2_register_restart_field(restart_fileobj, 'flux_v',      Ice%flux_v)
+    call fms2_register_restart_field(restart_fileobj, 'flux_t',      Ice%flux_t)
+    call fms2_register_restart_field(restart_fileobj, 'flux_q',      Ice%flux_q)
+    call fms2_register_restart_field(restart_fileobj, 'flux_salt',   Ice%flux_salt)
+    call fms2_register_restart_field(restart_fileobj, 'flux_lw',     Ice%flux_lw)
+    call fms2_register_restart_field(restart_fileobj, 'lprec',       Ice%lprec)
+    call fms2_register_restart_field(restart_fileobj, 'fprec',       Ice%fprec)
+    call fms2_register_restart_field(restart_fileobj, 'runoff',      Ice%runoff)
+    call fms2_register_restart_field(restart_fileobj, 'calving',     Ice%calving)
+    call fms2_register_restart_field(restart_fileobj, 'runoff_hflx', Ice%runoff_hflx)
+    call fms2_register_restart_field(restart_fileobj, 'calving_hflx', Ice%calving_hflx)
+    call fms2_register_restart_field(restart_fileobj, 'p_surf',      Ice%p_surf)
+    call fms2_register_restart_field(restart_fileobj, 'flux_sw_vis_dir', Ice%flux_sw_vis_dir)
+    call fms2_register_restart_field(restart_fileobj, 'flux_sw_vis_dif', Ice%flux_sw_vis_dif)
+    call fms2_register_restart_field(restart_fileobj, 'flux_sw_nir_dir', Ice%flux_sw_nir_dir)
+    call fms2_register_restart_field(restart_fileobj, 'flux_sw_nir_dif', Ice%flux_sw_nir_dif)
     if (Ice%sCS%pass_stress_mag) &
-      call register_restart_field(restart_fileobj, 'stress_mag', Ice%stress_mag)
+      call fms2_register_restart_field(restart_fileobj, 'stress_mag', Ice%stress_mag)
     if (Ice%sCS%pass_iceberg_area_to_ocean) then
-      call register_restart_field(restart_fileobj, 'ustar_berg', Ice%ustar_berg)
-      call register_restart_field(restart_fileobj, 'area_berg', Ice%area_berg)
-      call register_restart_field(restart_fileobj, 'mass_berg', Ice%mass_berg)
+      call fms2_register_restart_field(restart_fileobj, 'ustar_berg', Ice%ustar_berg)
+      call fms2_register_restart_field(restart_fileobj, 'area_berg', Ice%area_berg)
+      call fms2_register_restart_field(restart_fileobj, 'mass_berg', Ice%mass_berg)
     endif
   else
       call SIS_error(FATAL,'ice_type::ice_type_slow_reg_restarts: nc_mode is invalid.'// &
@@ -357,13 +366,132 @@ subroutine ice_type_slow_reg_restarts(domain, CatIce, param_file, Ice, restart_f
 
     if (allocated(dim_names)) deallocate(dim_names)
     if (allocated(dim_lengths)) deallocate(dim_lengths)
-end subroutine ice_type_slow_reg_restarts
+end subroutine ice_type_slow_reg_restarts_new_io
+
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> ice_type_slow_reg_restarts allocates the arrays in the ice_data_type that are
+!! predominantly associated with the slow processors, and register any variables
+!! in the ice data type that need to be included in the slow ice restart files.
+subroutine ice_type_slow_reg_restarts_old_io(domain, CatIce, param_file, Ice, &
+                                      Ice_restart, restart_file, gas_fluxes)
+  type(domain2d),          intent(in)    :: domain   !< The ice models' FMS domain type
+  integer,                 intent(in)    :: CatIce   !< The number of ice thickness categories
+  type(param_file_type),   intent(in)    :: param_file !< A structure to parse for run-time parameters
+  type(ice_data_type),     intent(inout) :: Ice !< The publicly visible ice data type.
+  type(restart_file_type), pointer       :: Ice_restart !< The sea ice restart control structure
+  character(len=*),        intent(in)    :: restart_file !< The ice restart file name
+  type(coupler_1d_bc_type), &
+                 optional, intent(in)    :: gas_fluxes !< If present, this type describes the
+                                              !! additional gas or other tracer fluxes between the
+                                              !! ocean, ice, and atmosphere.
+
+  ! This subroutine allocates the externally visible ice_data_type's arrays and
+  ! registers the appopriate ones for inclusion in the restart file.
+  integer :: isc, iec, jsc, jec, km, idr
+
+  call mpp_get_compute_domain(domain, isc, iec, jsc, jec )
+  km = CatIce + 1
+
+  ! The fields t_surf, s_surf, and part_size are only available on fast PEs.
+
+  if(.not.(associated(Ice%flux_u))) allocate(Ice%flux_u(isc:iec, jsc:jec)) ; Ice%flux_u(:,:) = 0.0
+    if(.not.(associated(Ice%flux_v))) allocate(Ice%flux_v(isc:iec, jsc:jec)) ; Ice%flux_v(:,:) = 0.0
+    if(.not.(associated(Ice%flux_t))) allocate(Ice%flux_t(isc:iec, jsc:jec)) ; Ice%flux_t(:,:) = 0.0
+    if(.not.(associated(Ice%flux_q))) allocate(Ice%flux_q(isc:iec, jsc:jec)) ; Ice%flux_q(:,:) = 0.0
+    if(.not.(associated(Ice%flux_sw_vis_dir))) &
+      allocate(Ice%flux_sw_vis_dir(isc:iec, jsc:jec)) ; Ice%flux_sw_vis_dir(:,:) = 0.0
+    if(.not.(associated(Ice%flux_sw_vis_dif))) &
+      allocate(Ice%flux_sw_vis_dif(isc:iec, jsc:jec)) ; Ice%flux_sw_vis_dif(:,:) = 0.0
+    if(.not.(associated(Ice%flux_sw_nir_dir))) &
+      allocate(Ice%flux_sw_nir_dir(isc:iec, jsc:jec)) ; Ice%flux_sw_nir_dir(:,:) = 0.0
+    if(.not.(associated(Ice%flux_sw_nir_dif))) &
+      allocate(Ice%flux_sw_nir_dif(isc:iec, jsc:jec)) ; Ice%flux_sw_nir_dif(:,:) = 0.0
+    if(.not.(associated(Ice%flux_lw))) &
+      allocate(Ice%flux_lw(isc:iec, jsc:jec)) ; Ice%flux_lw(:,:) = 0.0
+    if(.not.(associated(Ice%flux_lh))) &
+      allocate(Ice%flux_lh(isc:iec, jsc:jec)) ; Ice%flux_lh(:,:) = 0.0 !NI
+    if(.not.(associated(Ice%lprec))) &
+      allocate(Ice%lprec(isc:iec, jsc:jec)) ; Ice%lprec(:,:) = 0.0
+    if(.not.(associated(Ice%fprec))) &
+      allocate(Ice%fprec(isc:iec, jsc:jec)) ; Ice%fprec(:,:) = 0.0
+    if(.not.(associated(Ice%p_surf))) &
+      allocate(Ice%p_surf(isc:iec, jsc:jec)) ; Ice%p_surf(:,:) = 0.0
+    if(.not.(associated(Ice%runoff))) &
+      allocate(Ice%runoff(isc:iec, jsc:jec)) ; Ice%runoff(:,:) = 0.0
+    if(.not.(associated(Ice%calving))) &
+      allocate(Ice%calving(isc:iec, jsc:jec)) ; Ice%calving(:,:) = 0.0
+    if(.not.(associated(Ice%runoff_hflx))) &
+      allocate(Ice%runoff_hflx(isc:iec, jsc:jec)) ; Ice%runoff_hflx(:,:) = 0.0
+    if(.not.(associated(Ice%calving_hflx))) &
+      allocate(Ice%calving_hflx(isc:iec, jsc:jec)) ; Ice%calving_hflx(:,:) = 0.0
+    if(.not.(associated(Ice%flux_salt))) &
+      allocate(Ice%flux_salt(isc:iec, jsc:jec)) ; Ice%flux_salt(:,:) = 0.0
+
+    if(.not.(associated(Ice%SST_C))) allocate(Ice%SST_C(isc:iec, jsc:jec)) ; Ice%SST_C(:,:) = 0.0
+    if(.not.(associated(Ice%area))) allocate(Ice%area(isc:iec, jsc:jec)) ; Ice%area(:,:) = 0.0
+    if(.not.(associated(Ice%mi))) allocate(Ice%mi(isc:iec, jsc:jec)) ; Ice%mi(:,:) = 0.0 !NR
+
+    if (Ice%sCS%pass_stress_mag) then
+      if(.not.(associated(Ice%stress_mag))) &
+        allocate(Ice%stress_mag(isc:iec, jsc:jec)) ; Ice%stress_mag(:,:) = 0.0
+    endif
+
+    if (Ice%sCS%pass_iceberg_area_to_ocean) then
+      if(.not.(associated(Ice%ustar_berg))) &
+        allocate(Ice%ustar_berg(isc:iec, jsc:jec)) ; Ice%ustar_berg(:,:) = 0.0
+      if(.not.(associated(Ice%area_berg))) &
+        allocate(Ice%area_berg(isc:iec, jsc:jec)) ; Ice%area_berg(:,:) = 0.0
+      if(.not.(associated(Ice%mass_berg))) &
+        allocate(Ice%mass_berg(isc:iec, jsc:jec)) ; Ice%mass_berg(:,:) = 0.0
+    endif
+  if (present(gas_fluxes)) &
+    call coupler_type_spawn(gas_fluxes, Ice%ocean_fluxes, (/isc,isc,iec,iec/), &
+                            (/jsc,jsc,jec,jec/),  suffix = '_ice')
+
+  ! These are used by the ocean model, and need to be in the slow PE restarts.
+  if (associated(Ice_restart)) then
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_u',      Ice%flux_u,    domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_v',      Ice%flux_v,    domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_t',      Ice%flux_t,    domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_q',      Ice%flux_q,    domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_salt',   Ice%flux_salt, domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_lw',     Ice%flux_lw,   domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'lprec',       Ice%lprec,     domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'fprec',       Ice%fprec,     domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'runoff',      Ice%runoff,    domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'calving',     Ice%calving,   domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'runoff_hflx', Ice%runoff_hflx, &
+                                 domain=domain, mandatory=.false.)
+    idr = register_restart_field(Ice_restart, restart_file, 'calving_hflx',Ice%calving_hflx, &
+                                 domain=domain, mandatory=.false.)
+    idr = register_restart_field(Ice_restart, restart_file, 'p_surf',      Ice%p_surf,    domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_sw_vis_dir', Ice%flux_sw_vis_dir, &
+                                        domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_sw_vis_dif', Ice%flux_sw_vis_dif, &
+                                        domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_sw_nir_dir', Ice%flux_sw_nir_dir, &
+                                        domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'flux_sw_nir_dif', Ice%flux_sw_nir_dif, &
+                                        domain=domain)
+    if (Ice%sCS%pass_stress_mag) &
+      idr = register_restart_field(Ice_restart, restart_file, 'stress_mag', Ice%stress_mag, &
+                                   domain=domain, mandatory=.false.)
+    if (Ice%sCS%pass_iceberg_area_to_ocean) then
+      idr = register_restart_field(Ice_restart, restart_file, 'ustar_berg', Ice%ustar_berg, &
+                                   domain=domain, mandatory=.false.)
+      idr = register_restart_field(Ice_restart, restart_file, 'area_berg', Ice%area_berg, &
+                                   domain=domain, mandatory=.false.)
+      idr = register_restart_field(Ice_restart, restart_file, 'mass_berg', Ice%mass_berg, &
+                                   domain=domain, mandatory=.false.)
+    endif
+  endif
+end subroutine ice_type_slow_reg_restarts_old_io
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> ice_type_fast_reg_restarts allocates the arrays in the ice_data_type that are
 !! predominantly associated with the fast processors, and registers any variables
 !! in the ice data type that need to be included in the fast ice restart files.
-subroutine ice_type_fast_reg_restarts(domain, CatIce, param_file, Ice, restart_fileobj, &
+subroutine ice_type_fast_reg_restarts_new_io(domain, CatIce, param_file, Ice, restart_fileobj, &
                                       restart_file, nc_mode, gas_fields_ocn)
   type(domain2d),          intent(in)    :: domain   !< The ice models' FMS domain type
   integer,                 intent(in)    :: CatIce   !< The number of ice thickness categories
@@ -454,11 +582,11 @@ subroutine ice_type_fast_reg_restarts(domain, CatIce, param_file, Ice, restart_f
     ! Now register some of these arrays to be read from the restart files.
     ! These are used by the atmospheric model, and need to be in the fast PE restarts.
     if (.not.is_registered_to_restart(restart_fileobj, 'rough_mom')) &
-      call register_restart_field(restart_fileobj, 'rough_mom', Ice%rough_mom, dimensions=dim_names)
+      call fms2_register_restart_field(restart_fileobj, 'rough_mom', Ice%rough_mom, dimensions=dim_names)
     if (.not.is_registered_to_restart(restart_fileobj, 'rough_heat')) &
-      call register_restart_field(restart_fileobj, 'rough_heat', Ice%rough_heat, dimensions=dim_names)
+      call fms2_register_restart_field(restart_fileobj, 'rough_heat', Ice%rough_heat, dimensions=dim_names)
     if (.not.is_registered_to_restart(restart_fileobj, 'rough_moist')) &
-      call register_restart_field(restart_fileobj, 'rough_moist', Ice%rough_moist, dimensions=dim_names)
+      call fms2_register_restart_field(restart_fileobj, 'rough_moist', Ice%rough_moist, dimensions=dim_names)
   elseif (trim(nc_mode) .eq. "read") then
     if (.not.(check_if_open(restart_fileobj))) then
       file_open_success=fms2_open_file(restart_fileobj, trim(restart_file), trim(nc_mode), domain, &
@@ -468,11 +596,11 @@ subroutine ice_type_fast_reg_restarts(domain, CatIce, param_file, Ice, restart_f
     endif
     ! register arrays to read in
     if (.not.is_registered_to_restart(restart_fileobj, 'rough_mom')) &
-      call register_restart_field(restart_fileobj, 'rough_mom', Ice%rough_mom)
+      call fms2_register_restart_field(restart_fileobj, 'rough_mom', Ice%rough_mom)
     if (.not.is_registered_to_restart(restart_fileobj, 'rough_heat')) &
-      call register_restart_field(restart_fileobj, 'rough_heat', Ice%rough_heat)
+      call fms2_register_restart_field(restart_fileobj, 'rough_heat', Ice%rough_heat)
     if (.not.is_registered_to_restart(restart_fileobj, 'rough_moist')) &
-      call register_restart_field(restart_fileobj, 'rough_moist', Ice%rough_moist)
+      call fms2_register_restart_field(restart_fileobj, 'rough_moist', Ice%rough_moist)
   else
     call SIS_error(FATAL,'ice_type::ice_type_fast_reg_restarts: nc_mode is invalid.'// &
                    'Must be read, write, overwrite, or append')
@@ -480,7 +608,78 @@ subroutine ice_type_fast_reg_restarts(domain, CatIce, param_file, Ice, restart_f
 
   if (allocated(dim_names)) deallocate(dim_names)
   if (allocated(dim_lengths)) deallocate(dim_lengths)
-end subroutine ice_type_fast_reg_restarts
+end subroutine ice_type_fast_reg_restarts_new_io
+
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> ice_type_fast_reg_restarts allocates the arrays in the ice_data_type that are
+!! predominantly associated with the fast processors, and registers any variables
+!! in the ice data type that need to be included in the fast ice restart files.
+subroutine ice_type_fast_reg_restarts_old_io(domain, CatIce, param_file, Ice, &
+                                      Ice_restart, restart_file, gas_fields_ocn)
+  type(domain2d),          intent(in)    :: domain   !< The ice models' FMS domain type
+  integer,                 intent(in)    :: CatIce   !< The number of ice thickness categories
+  type(param_file_type),   intent(in)    :: param_file !< A structure to parse for run-time parameters
+  type(ice_data_type),     intent(inout) :: Ice !< The publicly visible ice data type.
+  type(restart_file_type), pointer       :: Ice_restart !< The sea ice restart control structure
+  character(len=*),        intent(in)    :: restart_file !< The ice restart file name
+  type(coupler_1d_bc_type), &
+                 optional, intent(in)    :: gas_fields_ocn !< If present, this type describes the
+                                              !! ocean and surface-ice fields that will participate
+                                              !! in the calculation of additional gas or other
+                                              !! tracer fluxes.
+
+  ! This subroutine allocates the externally visible ice_data_type's arrays and
+  ! registers the appopriate ones for inclusion in the restart file.
+  integer :: isc, iec, jsc, jec, km, idr
+
+  call mpp_get_compute_domain(domain, isc, iec, jsc, jec )
+  km = CatIce + 1
+
+  if(.not.(associated(Ice%t_surf))) &
+      allocate(Ice%t_surf(isc:iec, jsc:jec, km)) ; Ice%t_surf(:,:,:) = 0.0
+  if(.not.(associated(Ice%s_surf))) &
+      allocate(Ice%s_surf(isc:iec, jsc:jec)) ; Ice%s_surf(:,:) = 0.0
+    if(.not.(associated(Ice%part_size))) &
+      allocate(Ice%part_size(isc:iec, jsc:jec, km)) ; Ice%part_size(:,:,:) = 0.0
+    if(.not.(associated(Ice%u_surf))) &
+      allocate(Ice%u_surf(isc:iec, jsc:jec, km)) ; Ice%u_surf(:,:,:) = 0.0
+    if(.not.(associated(Ice%v_surf))) &
+      allocate(Ice%v_surf(isc:iec, jsc:jec, km)) ; Ice%v_surf(:,:,:) = 0.0
+    if(.not.(associated(Ice%ocean_pt))) &
+      allocate(Ice%ocean_pt(isc:iec, jsc:jec)) ; Ice%ocean_pt(:,:) = .false. !derived
+
+    if(.not.(associated(Ice%rough_mom))) &
+      allocate(Ice%rough_mom(isc:iec, jsc:jec, km)) ; Ice%rough_mom(:,:,:) = 0.0
+    if(.not.(associated(Ice%rough_heat))) &
+      allocate(Ice%rough_heat(isc:iec, jsc:jec, km)) ; Ice%rough_heat(:,:,:) = 0.0
+    if(.not.(associated(Ice%rough_moist))) &
+      allocate(Ice%rough_moist(isc:iec, jsc:jec, km)) ; Ice%rough_moist(:,:,:) = 0.0
+
+    if(.not.(associated(Ice%albedo))) &
+      allocate(Ice%albedo(isc:iec, jsc:jec, km)) ; Ice%albedo(:,:,:) = 0.0  ! Derived?
+    if(.not.(associated(Ice%albedo_vis_dir))) &
+      allocate(Ice%albedo_vis_dir(isc:iec, jsc:jec, km)) ; Ice%albedo_vis_dir(:,:,:) = 0.0
+    if(.not.(associated(Ice%albedo_nir_dir))) &
+      allocate(Ice%albedo_nir_dir(isc:iec, jsc:jec, km)) ; Ice%albedo_nir_dir(:,:,:) = 0.0
+    if(.not.(associated(Ice%albedo_vis_dif))) &
+      allocate(Ice%albedo_vis_dif(isc:iec, jsc:jec, km)) ; Ice%albedo_vis_dif(:,:,:) = 0.0
+    if(.not.(associated(Ice%albedo_nir_dif))) &
+      allocate(Ice%albedo_nir_dif(isc:iec, jsc:jec, km)) ; Ice%albedo_nir_dif(:,:,:) = 0.0
+
+
+  if (present(gas_fields_ocn)) &
+    call coupler_type_spawn(gas_fields_ocn, Ice%ocean_fields, (/isc,isc,iec,iec/), &
+                            (/jsc,jsc,jec,jec/), (/1, km/), suffix = '_ice')
+
+  ! Now register some of these arrays to be read from the restart files.
+  ! These are used by the atmospheric model, and need to be in the fast PE restarts.
+  if (associated(Ice_restart)) then
+    idr = register_restart_field(Ice_restart, restart_file, 'rough_mom',   Ice%rough_mom,   domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'rough_heat',  Ice%rough_heat,  domain=domain)
+    idr = register_restart_field(Ice_restart, restart_file, 'rough_moist', Ice%rough_moist, domain=domain)
+  endif
+
+end subroutine ice_type_fast_reg_restarts_old_io
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> dealloc_Ice_arrays deallocates the memory in the publicly visible ice data type.
