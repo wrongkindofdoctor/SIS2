@@ -2991,7 +2991,7 @@ end subroutine update_ice_atm_deposition_flux
 !> ice_model_end writes the restart file and deallocates memory
 subroutine ice_model_end(Ice, restart_time)
   type(ice_data_type), intent(inout) :: Ice !< The publicly visible ice data type.
-  type(time_type), intent(in) :: restart_time !< time to write to the restart file
+  type(time_type), optional, intent(in) :: restart_time !< time to write to the restart file
   logical :: fast_ice_PE       ! If true, fast ice processes are handled on this PE.
   logical :: slow_ice_PE       ! If true, slow ice processes are handled on this PE.
 
