@@ -21,6 +21,9 @@ use MOM_hor_index,    only : hor_index_type
 use MOM_unit_scaling, only : unit_scale_type
 use SIS_hor_grid,     only : SIS_hor_grid_type
 use fms_io_mod,       only : register_restart_field, restart_file_type
+use fms2_io_mod,      only : FmsNetcdfDomainFile_t, check_if_open, &
+                             fms2_register_restart_field=>register_restart_field, &
+                             check_if_open
 use mpp_domains_mod,  only : domain2D
 use ice_ridging_mod,  only : ridge_rate
 
@@ -29,6 +32,11 @@ implicit none ; private
 #include <SIS2_memory.h>
 
 public :: SIS_B_dyn_init, SIS_B_dynamics, SIS_B_dyn_end, SIS_B_dyn_register_restarts
+
+interface SIS_B_dyn_register_restarts
+  module procedure SIS_B_dyn_register_restarts_old_io
+  module procedure SIS_B_dyn_register_restarts_new_io
+end interface SIS_B_dyn_register_restarts
 
 !> The control structure with parameters regulating B-grid ice dynamics
 type, public :: SIS_B_dyn_CS ; private
@@ -701,7 +709,7 @@ end function sigII
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_B_dyn_register_restarts allocates and registers any variables for this
 !!      module that need to be included in the restart files.
-subroutine SIS_B_dyn_register_restarts(mpp_domain, HI, param_file, CS, Ice_restart, restart_file)
+subroutine SIS_B_dyn_register_restarts_old_io(mpp_domain, HI, param_file, CS, Ice_restart, restart_file)
   type(domain2d),          intent(in) :: mpp_domain !< The ice models' FMS domain type
   type(hor_index_type),    intent(in) :: HI    !< The horizontal index type describing the domain
   type(param_file_type),   intent(in) :: param_file !< A structure to parse for run-time parameters
@@ -734,8 +742,53 @@ subroutine SIS_B_dyn_register_restarts(mpp_domain, HI, param_file, CS, Ice_resta
     id = register_restart_field(Ice_restart, restart_file, 'sig12', CS%sig12, &
                                 domain=mpp_domain, mandatory=.false.)
   endif
-end subroutine SIS_B_dyn_register_restarts
+end subroutine SIS_B_dyn_register_restarts_old_io
 
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> SIS_B_dyn_register_restarts allocates and registers any variables for this
+!!      module that need to be included in the restart files.
+subroutine SIS_B_dyn_register_restarts_new_io(mpp_domain, HI, param_file, CS, restart_fileobj, restart_file, &
+                                       nc_mode)
+  type(domain2d),          intent(in) :: mpp_domain !< The ice models' FMS domain type
+  type(hor_index_type),    intent(in) :: HI    !< The horizontal index type describing the domain
+  type(param_file_type),   intent(in) :: param_file !< A structure to parse for run-time parameters
+  type(SIS_B_dyn_CS),      pointer    :: CS    !< The control structure for this module that
+                                               !! will be allocated here
+  type(FmsNetcdfDomainFile_t), intent(inout) :: restart_fileobj !< restart file object opened in
+                                                                !! read/write/append mode
+  character(len=*),        intent(in) :: restart_file !< The ice restart file name
+  character(len=*),        intent(in) :: nc_mode !< mode to open netcdf file in; read, write, append, overwrite
+!   This subroutine registers the restart variables associated with the
+! the ice dynamics.
+
+  integer :: isd, ied, jsd, jed, id
+  isd = HI%isd ; ied = HI%ied ; jsd = HI%jsd ; jed = HI%jed
+
+  if (associated(CS)) then
+    call SIS_error(WARNING, "SIS_B_dyn_register_restarts called with an "//&
+                            "associated control structure.")
+    return
+  endif
+  if (trim(nc_mode) .eq. "write" .or. trim(nc_mode) .eq. "overwrite" .or. trim(nc_mode) .eq. "append") then
+    allocate(CS)
+  
+    allocate(CS%sig11(isd:ied, jsd:jed)) ; CS%sig11(:,:) = 0.0
+    allocate(CS%sig12(isd:ied, jsd:jed)) ; CS%sig12(:,:) = 0.0
+    allocate(CS%sig22(isd:ied, jsd:jed)) ; CS%sig22(:,:) = 0.0
+  endif
+
+  if (check_if_open(restart_fileobj)) then
+    call fms2_register_restart_field(restart_fileobj, 'sig11', CS%sig11(isd:ied, jsd:jed), &
+      (/"xaxis_1", "yaxis_1", "Time   "/))
+    call fms2_register_restart_field(restart_fileobj, 'sig22', CS%sig22(isd:ied, jsd:jed), &
+      (/"xaxis_1", "yaxis_1", "Time   "/))
+    call fms2_register_restart_field(restart_fileobj, 'sig12', CS%sig12(isd:ied, jsd:jed), &
+      (/"xaxis_1", "yaxis_1", "Time   "/))
+  else
+    call SIS_error(FATAL, &
+      "SIS_dyn_bgrid::SIS_B_dyn_register_restarts: restart file object is not open.")
+  endif
+end subroutine SIS_B_dyn_register_restarts_new_io
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_B_dyn_end - deallocates the memory associated with this module.
 subroutine SIS_B_dyn_end(CS)

@@ -63,6 +63,11 @@ interface ice_state_register_restarts
   module procedure ice_state_register_restarts_old_io
 end interface ice_state_register_restarts
 
+interface ice_state_read_alt_restarts
+  module procedure ice_state_read_alt_restarts_new_io
+  module procedure ice_state_read_alt_restarts_old_io
+end interface ice_state_read_alt_restarts
+
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> This structure contains the ice model state, and is intended to be private
 !! to SIS2.  It is not to be shared with other components and modules, and may
@@ -773,7 +778,7 @@ end subroutine register_unit_conversion_restarts
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> ice_state_read_alt_restarts reads in alternative variables that might have been in the restart
 !! file, specifically dealing with changing between symmetric and non-symmetric memory restart files.
-subroutine ice_state_read_alt_restarts(IST, G, IG, Ice_restart, &
+subroutine ice_state_read_alt_restarts_old_io(IST, G, IG, Ice_restart, &
                                        restart_file, restart_dir)
   type(ice_state_type),    intent(inout) :: IST !< A type describing the state of the sea ice
   type(SIS_hor_grid_type), intent(in)    :: G   !< The horizontal grid type
@@ -915,7 +920,140 @@ subroutine ice_state_read_alt_restarts(IST, G, IG, Ice_restart, &
   deallocate(u_tmp, v_tmp)
   deallocate(domain_tmp%mpp_domain) ; deallocate(domain_tmp)
 
-end subroutine ice_state_read_alt_restarts
+end subroutine ice_state_read_alt_restarts_old_io
+
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> ice_state_read_alt_restarts reads in alternative variables that might have been in the restart
+!! file, specifically dealing with changing between symmetric and non-symmetric memory restart files.
+subroutine ice_state_read_alt_restarts_new_io(IST, G, IG, restart_fileobj, &
+                                       restart_file, restart_dir)
+  type(ice_state_type),    intent(inout) :: IST !< A type describing the state of the sea ice
+  type(SIS_hor_grid_type), intent(in)    :: G   !< The horizontal grid type
+  type(ice_grid_type),     intent(in)    :: IG  !< The sea-ice specific grid type
+  type(FmsNetcdfDomainFile_t), intent(inout) :: restart_fileobj !< restart file object opened in "read" mode
+  character(len=*),        intent(in)    :: restart_file !< The name of the ice restart file
+  character(len=*),        intent(in)    :: restart_dir !< A directory in which to find the restart file
+
+  ! These are temporary variables that will be used only here for reading and then discarded.
+  real, allocatable, target, dimension(:,:) :: u_tmp, v_tmp
+  type(MOM_domain_type),   pointer :: domain_tmp => NULL()
+  logical :: u_set, v_set
+  integer :: i, j, id_u, id_v
+
+  if (G%symmetric) then
+
+    if (IST%Cgrid_dyn) then
+      u_set = is_registered_to_restart(restart_fileobj, 'sym_u_ice_C')
+      v_set = is_registered_to_restart(restart_fileobj, 'sym_v_ice_C')
+    else
+      u_set = is_registered_to_restart(restart_fileobj, 'sym_u_ice_B')
+      v_set = is_registered_to_restart(restart_fileobj, 'sym_v_ice_B')
+    endif
+    if (u_set .and. v_set) return
+
+    if (u_set .neqv. v_set) call SIS_error(FATAL, "ice_state_read_alt_restarts: "//&
+      "Only one of the u and v input variables were successfully read from the restart file.")
+
+    call clone_MOM_domain(G%domain, domain_tmp, symmetric=.false., &
+                          domain_name="ice temporary domain")
+    if (.not.(check_if_open(restart_fileobj))) call SIS_error(FATAL,"ice_state_read_alt_restarts: "//&
+      "restart file object is not open")
+
+    if (IST%Cgrid_dyn .and. (.not.u_set)) then
+      allocate(u_tmp(G%isd:G%ied, G%jsd:G%jed)) ; u_tmp(:,:) = 0.0
+      allocate(v_tmp(G%isd:G%ied, G%jsd:G%jed)) ; v_tmp(:,:) = 0.0
+      if (variable_exists(restart_fileobj, 'u_ice_C') .and. &
+        variable_exists(restart_fileobj, 'v_ice_C')) then
+        call fms2_register_restart_field(restart_fileobj, 'u_ice_C', u_tmp(:,:))
+        call fms2_register_restart_field(restart_fileobj, 'v_ice_C', v_tmp(:,:))
+        call read_data(restart_fileobj, 'u_ice_C', u_tmp)
+        call read_data(restart_fileobj, 'v_ice_C', v_tmp)
+        ! The non-symmetric variant of this vector has been successfully read.
+        call pass_vector(u_tmp, v_tmp, domain_tmp, stagger=CGRID_NE)
+        do j=G%jsc,G%jec ; do I=G%isc-1,G%iec
+          IST%u_ice_C(I,j) = u_tmp(I,j)
+        enddo ; enddo
+        do J=G%jsc-1,G%jec ; do i=G%isc,G%iec
+          IST%v_ice_C(i,J) = v_tmp(i,J)
+        enddo ; enddo
+      endif
+    endif
+    if ((.not.IST%Cgrid_dyn) .and. (.not.u_set)) then
+      allocate(u_tmp(G%isd:G%ied, G%jsd:G%jed)) ; u_tmp(:,:) = 0.0
+      allocate(v_tmp(G%isd:G%ied, G%jsd:G%jed)) ; v_tmp(:,:) = 0.0
+      if (variable_exists(restart_fileobj, 'u_ice') .and. &
+        variable_exists(restart_fileobj, 'v_ice')) then
+        call fms2_register_restart_field(restart_fileobj, 'u_ice', u_tmp(:,:))
+        call fms2_register_restart_field(restart_fileobj, 'v_ice', v_tmp(:,:))
+        call read_data(restart_fileobj, 'u_ice', u_tmp)
+        call read_data(restart_fileobj, 'v_ice', v_tmp)
+    
+        ! The non-symmetric variant of this variable has been successfully read.
+        call pass_vector(u_tmp, v_tmp, domain_tmp, stagger=BGRID_NE)
+        do J=G%jsc-1,G%jec ; do I=G%isc-1,G%iec
+          IST%u_ice_B(I,J) = u_tmp(I,J)
+          IST%v_ice_B(I,J) = v_tmp(I,J)
+        enddo ; enddo
+      endif
+    endif
+
+  else  ! .not. symmetric
+    if (IST%Cgrid_dyn) then
+      u_set = is_registered_to_restart(restart_fileobj, 'u_ice_C')
+      v_set = is_registered_to_restart(restart_fileobj, 'v_ice_C')
+    else
+      u_set = is_registered_to_restart(restart_fileobj, 'u_ice')
+      v_set = is_registered_to_restart(restart_fileobj, 'v_ice')
+    endif
+    if (u_set .and. v_set) return
+
+    if (u_set .neqv. v_set) call SIS_error(FATAL, "ice_state_read_alt_restarts: "//&
+      "Only one of the u and v input variables were successfully read from the restart file.")
+
+    call clone_MOM_domain(G%domain, domain_tmp, symmetric=.true., &
+                          domain_name="ice temporary sym")
+
+    if (IST%Cgrid_dyn .and. (.not.u_set)) then
+      allocate(u_tmp(G%isd-1:G%ied, G%jsd:G%jed)) ; u_tmp(:,:) = 0.0
+      allocate(v_tmp(G%isd:G%ied, G%jsd-1:G%jed)) ; v_tmp(:,:) = 0.0
+      if (variable_exists(restart_fileobj, 'sym_u_ice_C') .and. &
+        variable_exists(restart_fileobj, 'sym_v_ice_C')) then
+        call fms2_register_restart_field(restart_fileobj, 'sym_u_ice_C', u_tmp(:,:))
+        call fms2_register_restart_field(restart_fileobj, 'sym_v_ice_C', v_tmp(:,:))
+        call read_data(restart_fileobj, 'sym_u_ice_C', u_tmp)
+        call read_data(restart_fileobj, 'sym_v_ice_C', v_tmp)
+        ! The symmetric variant of this vector has been successfully read.
+        do j=G%jsc,G%jec ; do I=G%isc-1,G%iec
+          IST%u_ice_C(I,j) = u_tmp(I,j)
+        enddo ; enddo
+        do J=G%jsc-1,G%jec ; do i=G%isc,G%iec
+          IST%v_ice_C(i,J) = v_tmp(i,J)
+        enddo ; enddo
+      endif
+    endif
+    if ((.not.IST%Cgrid_dyn) .and. (.not.u_set)) then
+      allocate(u_tmp(G%isd-1:G%ied, G%jsd-1:G%jed)) ; u_tmp(:,:) = 0.0
+      allocate(v_tmp(G%isd-1:G%ied, G%jsd-1:G%jed)) ; v_tmp(:,:) = 0.0
+      if (variable_exists(restart_fileobj, 'sym_u_ice_B') .and. &
+          variable_exists(restart_fileobj, 'sym_v_ice_B')) then
+        call fms2_register_restart_field(restart_fileobj, 'sym_u_ice_B', u_tmp(:,:))
+        call fms2_register_restart_field(restart_fileobj, 'sym_v_ice_B', v_tmp(:,:))
+        call read_data(restart_fileobj, 'sym_v_ice_B', v_tmp)
+      
+        ! The symmetric variant of this variable has been successfully read.
+        do J=G%jsc-1,G%jec ; do I=G%isc-1,G%iec
+          IST%u_ice_B(I,J) = u_tmp(I,J)
+          IST%v_ice_B(I,J) = v_tmp(I,J)
+        enddo ; enddo
+      endif
+    endif
+  endif
+
+  deallocate(u_tmp, v_tmp)
+  deallocate(domain_tmp%mpp_domain) ; deallocate(domain_tmp)
+
+end subroutine ice_state_read_alt_restarts_new_io
+
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 !> rescale_ice_state_restart_fields handles any changes in dimensional rescaling of ice state

@@ -31,6 +31,9 @@ use MOM_unit_scaling, only : unit_scale_type
 use SIS_hor_grid,     only : SIS_hor_grid_type
 use fms_io_mod,       only : register_restart_field, restart_file_type
 use fms_io_mod,       only : restore_state, query_initialized
+use fms2_io_mod,      only : FmsNetcdfDomainFile_t, check_if_open, variable_exists, &
+                             fms2_register_restart_field=>register_restart_field, &
+                             read_data
 use mpp_domains_mod,  only : domain2D
 
 implicit none ; private
@@ -39,6 +42,17 @@ implicit none ; private
 
 public :: SIS_C_dyn_init, SIS_C_dynamics, SIS_C_dyn_end
 public :: SIS_C_dyn_register_restarts, SIS_C_dyn_read_alt_restarts
+
+interface SIS_C_dyn_register_restarts
+  module procedure SIS_C_dyn_register_restarts_new_io
+  module procedure SIS_C_dyn_register_restarts_old_io
+end interface SIS_C_dyn_register_restarts
+
+interface SIS_C_dyn_read_alt_restarts
+  module procedure SIS_C_dyn_read_alt_restarts_new_io
+  module procedure SIS_C_dyn_read_alt_restarts_old_io
+end interface SIS_C_dyn_read_alt_restarts
+
 
 !> The control structure with parameters regulating C-grid ice dynamics
 type, public :: SIS_C_dyn_CS ; private
@@ -1577,7 +1591,7 @@ end subroutine find_sigII
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_C_dyn_register_restarts allocates and registers any variables for the
 !!   SIS C-grid dynamics module that need to be included in the restart files.
-subroutine SIS_C_dyn_register_restarts(mpp_domain, HI, param_file, CS, &
+subroutine SIS_C_dyn_register_restarts_old_io(mpp_domain, HI, param_file, CS, &
                                        Ice_restart, restart_file)
   type(domain2d),          intent(in) :: mpp_domain !< The ice models' FMS domain type
   type(hor_index_type),    intent(in) :: HI    !< The horizontal index type describing the domain
@@ -1615,7 +1629,53 @@ subroutine SIS_C_dyn_register_restarts(mpp_domain, HI, param_file, CS, &
                        domain=mpp_domain, position=CORNER, mandatory=.false.)
     endif
   endif
-end subroutine SIS_C_dyn_register_restarts
+end subroutine SIS_C_dyn_register_restarts_old_io
+
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> SIS_C_dyn_register_restarts allocates and registers any variables for the
+!!   SIS C-grid dynamics module that need to be included in the restart files.
+subroutine SIS_C_dyn_register_restarts_new_io(mpp_domain, HI, param_file, CS, restart_fileobj, &
+                                       restart_file, nc_mode)
+  type(domain2d),          intent(in) :: mpp_domain !< The ice models' FMS domain type
+  type(hor_index_type),    intent(in) :: HI    !< The horizontal index type describing the domain
+  type(param_file_type),   intent(in) :: param_file !< A structure to parse for run-time parameters
+  type(SIS_C_dyn_CS),      pointer    :: CS    !< The control structure for this module
+  type(FmsNetcdfDomainFile_t), intent(inout) :: restart_fileobj !< restart file object opened in
+                                                                !! read/write/append mode
+  character(len=*),        intent(in) :: restart_file !< The ice restart file name
+  character(len=*),        intent(in) :: nc_mode !< mode to open netcdf file in; read, write, append, overwrite
+!   This subroutine registers the restart variables associated with the
+! the ice dynamics.
+  integer :: isd, ied, jsd, jed, id
+  isd = HI%isd ; ied = HI%ied ; jsd = HI%jsd ; jed = HI%jed
+  if (associated(CS)) then
+    call SIS_error(WARNING, "SIS_C_dyn_register_restarts called with an "//&
+                            "associated control structure.")
+    return
+  endif
+  if (trim(nc_mode) .eq. "write" .or. trim(nc_mode) .eq. "overwrite" .or. trim(nc_mode) .eq. "append") then
+    allocate(CS)
+    allocate(CS%str_d(isd:ied, jsd:jed)) ; CS%str_d(:,:) = 0.0
+    allocate(CS%str_t(isd:ied, jsd:jed)) ; CS%str_t(:,:) = 0.0
+    allocate(CS%str_s(HI%IsdB:HI%IedB, HI%JsdB:HI%JedB)) ; CS%str_s(:,:) = 0.0
+  endif
+  if (check_if_open(restart_fileobj)) then
+    call fms2_register_restart_field(restart_fileobj, 'str_d', CS%str_d(isd:ied, jsd:jed), &
+                                dimensions=(/'xaxis_1','yaxis_1','Time   '/))
+    call fms2_register_restart_field(restart_fileobj, 'str_t', CS%str_t, &
+                                dimensions=(/'xaxis_1','yaxis_1','Time   '/))
+    if (HI%symmetric) then
+      call fms2_register_restart_field(restart_fileobj, 'sym_str_s', CS%str_s, &
+                                  dimensions=(/'xaxis_2','yaxis_2','Time   '/))
+    else
+      call fms2_register_restart_field(restart_fileobj, 'str_s', CS%str_s, &
+                                  dimensions=(/'xaxis_2','yaxis_2','Time   '/))
+    endif
+  else
+    call SIS_error(FATAL, "SIS_dyn_cgrid::SIS_C_dyn_register_restarts:"//&
+                   "restart fileobject is not open.")
+  endif
+end subroutine SIS_C_dyn_register_restarts_new_io
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_C_dyn_read_alt_restarts reads in alternative variables for the SIS C-grid dynamics module
@@ -1623,7 +1683,7 @@ end subroutine SIS_C_dyn_register_restarts
 !!   and non-symmetric memory restart files.  It also handles any changes in dimensional rescaling
 !!   of these variables between what is stored in the restart file and what is done for the current
 !!   run segment.
-subroutine SIS_C_dyn_read_alt_restarts(CS, G, US, Ice_restart, restart_file, restart_dir)
+subroutine SIS_C_dyn_read_alt_restarts_old_io(CS, G, US, Ice_restart, restart_file, restart_dir)
   type(SIS_C_dyn_CS),      pointer    :: CS    !< The control structure for this module
   type(SIS_hor_grid_type), intent(in) :: G   !< The horizontal grid type
   type(unit_scale_type),   intent(in) :: US  !< A structure with unit conversion factors
@@ -1693,7 +1753,76 @@ subroutine SIS_C_dyn_read_alt_restarts(CS, G, US, Ice_restart, restart_file, res
     enddo ; enddo
   endif
 
-end subroutine SIS_C_dyn_read_alt_restarts
+end subroutine SIS_C_dyn_read_alt_restarts_old_io
+
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> SIS_C_dyn_read_alt_restarts reads in alternative variables for the SIS C-grid dynamics module
+!!   that might have been in the restart file, specifically dealing with changing between symmetric
+!!   and non-symmetric memory restart files.  It also handles any changes in dimensional rescaling
+!!   of these variables between what is stored in the restart file and what is done for the current
+!!   run segment.
+subroutine SIS_C_dyn_read_alt_restarts_new_io(CS, G, US, restart_fileobj, restart_file, restart_dir)
+  type(SIS_C_dyn_CS),      pointer    :: CS    !< The control structure for this module
+  type(SIS_hor_grid_type), intent(in) :: G   !< The horizontal grid type
+  type(unit_scale_type),   intent(in) :: US  !< A structure with unit conversion factors
+  type(FmsNetcdfDomainFile_t), intent(inout) :: restart_fileobj !< restart file object opened in
+                                                                !! read/write/append mode
+  !type(restart_file_type), pointer    :: Ice_restart !< The sea ice restart control structure
+  character(len=*),        intent(in) :: restart_file !< The ice restart file name
+  character(len=*),        intent(in) :: restart_dir !< The directory in which to find the restart files
+  ! These are temporary variables that will be used only here for reading and
+  ! then discarded.
+  real, allocatable, target, dimension(:,:) :: str_tmp
+  type(MOM_domain_type),   pointer :: domain_tmp => NULL()
+  real :: stress_rescale
+  integer :: i, j, id
+  if (G%symmetric .and. (.not.variable_exists(restart_fileobj, 'sym_str_s'))) then
+    if (variable_exists(restart_fileobj, 'str_s')) then
+      call clone_MOM_domain(G%domain, domain_tmp, symmetric=.false., &
+                          domain_name="ice temporary domain")
+      allocate(str_tmp(G%isd:G%ied, G%jsd:G%jed)) ; str_tmp(:,:) = 0.0
+      !call register_restart_field(retart_fileobj, 'str_s', str_tmp) ! &
+                 !domain=domain_tmp%mpp_domain, position=CORNER, &
+                ! mandatory=.false., read_only=.true.)
+      call read_data(restart_fileobj, 'str_s', str_tmp(G%isd:G%ied, G%jsd:G%jed))
+      ! The non-symmetric variant of this variable has been successfully read.
+      call pass_var(str_tmp, domain_tmp, position=CORNER)
+      do J=G%jsc-1,G%jec ; do I=G%isc-1,G%iec
+        CS%str_s(I,J) = str_tmp(I,J)
+      enddo ; enddo
+    endif
+  elseif ((.not.G%symmetric) .and. (.not.variable_exists(restart_fileobj, 'str_s'))) then
+    if (variable_exists(restart_fileobj, 'sym_str_s')) then
+      call clone_MOM_domain(G%domain, domain_tmp, symmetric=.true., &
+                          domain_name="ice temporary domain")
+      allocate(str_tmp(G%isd-1:G%ied, G%jsd-1:G%jed)) ; str_tmp(:,:) = 0.0
+      !call register_restart_field(restart_fileobj, 'sym_str_s', str_tmp)! &
+                 !domain=domain_tmp%mpp_domain, position=CORNER, &
+                ! mandatory=.false., read_only=.true.)
+      call read_data(restart_fileobj,'sym_str_s', str_tmp(G%isd-1:G%ied, G%jsd-1:G%jed))
+      ! The symmetric variant of this variable has been successfully read.
+      do J=G%jsc-1,G%jec ; do I=G%isc-1,G%iec
+        CS%str_s(I,J) = str_tmp(I,J)
+      enddo ; enddo
+    endif
+  endif
+  if (allocated(str_tmp)) deallocate(str_tmp)
+  if (associated(domain_tmp)) then ; deallocate(domain_tmp%mpp_domain) ; deallocate(domain_tmp) ; endif
+  ! Now redo the dimensional rescaling of the stresses if necessary.
+  if ((US%s_to_T_restart*US%m_to_L_restart*US%kg_m3_to_R_restart*US%m_to_Z_restart /= 0.0) .and. &
+      ((US%kg_m3_to_R * US%m_to_Z * (US%m_to_L*US%s_to_T_restart)**2) /= &
+       (US%kg_m3_to_R_restart * US%m_to_Z_restart * (US%m_to_L_restart*US%s_to_T)**2) ) ) then
+    stress_rescale = (US%kg_m3_to_R * US%m_to_Z * (US%m_to_L * US%s_to_T_restart)**2) / &
+                     (US%kg_m3_to_R_restart * US%m_to_Z_restart * (US%m_to_L_restart * US%s_to_T)**2)
+    do J=G%jsc-1,G%jec ; do I=G%isc-1,G%iec
+      CS%str_s(I,J) = stress_rescale * CS%str_s(I,J)
+    enddo ; enddo
+    do j=G%jsc,G%jec ; do i=G%isc,G%iec
+      CS%str_d(i,j) = stress_rescale * CS%str_d(i,j)
+      CS%str_t(i,j) = stress_rescale * CS%str_t(i,j)
+    enddo ; enddo
+  endif
+end subroutine SIS_C_dyn_read_alt_restarts_new_io
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> write_u_trunc is used to record the location of any pseudo-zonal velocity

@@ -2110,9 +2110,9 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     if (.not.specified_ice) &
       call SIS_dyn_trans_register_restarts(sGD%mpp_domain, sHI, sIG, param_file, &
                                            Ice%sCS%dyn_trans_CSp, Ice%Ice_restart, restart_file)
-      !call SIS_dyn_trans_register_restarts(sGD%mpp_domain, sHI, sIG, param_file, &
-       !                                    Ice%sCS%dyn_trans_CSp, restart_fileobj_write_slow, &
-      !                                     "RESTART/"//trim(restart_file), trim(nc_mode))
+      call SIS_dyn_trans_register_restarts(sGD%mpp_domain, sHI, sIG, param_file, &
+                                           Ice%sCS%dyn_trans_CSp, restart_fileobj_write_slow, &
+                                           "RESTART/"//trim(restart_file), trim(nc_mode))
 
 
     call SIS_diag_mediator_init(sG, sIG, param_file, Ice%sCS%diag, component="SIS", &
@@ -2364,19 +2364,19 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                       param_file, Ice, restart_fileobj_read_slow, trim(restart_path), nc_mode="read")
       endif
 
-      !call read_restart(restart_fileobj_read_slow)
+ !     call read_restart(restart_fileobj_read_slow)
 
       ! If the velocity and other fields have not been initialized, check for
       ! the fields that would have been read if symmetric were toggled.
-      call ice_state_read_alt_restarts(sIST, sG, sIG, Ice%Ice_restart, &
-                                       restart_file, dirs%restart_input_dir)
-      !call ice_state_read_alt_restarts(sIST, sG, sIG, restart_fileobj_read_slow, &
-      !                                 trim(restart_path), dirs%restart_input_dir)
+      !call ice_state_read_alt_restarts(sIST, sG, sIG, Ice%Ice_restart, &
+      !                                 restart_file, dirs%restart_input_dir)
+      call ice_state_read_alt_restarts(sIST, sG, sIG, restart_fileobj_read_slow, &
+                                       trim(restart_path), dirs%restart_input_dir)
       if (.not.specified_ice) &
-        call SIS_dyn_trans_read_alt_restarts(Ice%sCS%dyn_trans_CSp, sG, US, Ice%Ice_restart, &
-                                       restart_file, dirs%restart_input_dir)
-        !call SIS_dyn_trans_read_alt_restarts(Ice%sCS%dyn_trans_CSp, sG, US, restart_fileobj_read_slow, &
-        !                                     trim(restart_path), dirs%restart_input_dir)
+        !call SIS_dyn_trans_read_alt_restarts(Ice%sCS%dyn_trans_CSp, sG, US, Ice%Ice_restart, &
+         !                              restart_file, dirs%restart_input_dir)
+        call SIS_dyn_trans_read_alt_restarts(Ice%sCS%dyn_trans_CSp, sG, US, restart_fileobj_read_slow, &
+                                             trim(restart_path), dirs%restart_input_dir)
 
 
       call rescale_ice_state_restart_fields(sIST, sG, US, sIG)
@@ -2389,11 +2389,11 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
         allocate(sal_ice_tmp(sG%isd:sG%ied, sG%jsd:sG%jed, CatIce, NkIce)) ; sal_ice_tmp(:,:,:,:) = 0.0
         do n=1,NkIce
           write(nstr, '(I4)') n ; nstr = adjustl(nstr)
-          !call read_data(restart_fileobj_read_slow, 'sal_ice', sal_ice_tmp(:,:,:,n))
-          id_sal = register_restart_field(Ice%Ice_restart, restart_file, 'sal_ice'//trim(nstr), &
-                                       sal_ice_tmp(:,:,:,n), domain=sGD%mpp_domain, &
-                                       mandatory=.false., read_only=.true.)
-          call restore_state(Ice%Ice_restart, id_sal, directory=dirs%restart_input_dir)
+          call read_data(restart_fileobj_read_slow, 'sal_ice', sal_ice_tmp(:,:,:,n))
+          !id_sal = register_restart_field(Ice%Ice_restart, restart_file, 'sal_ice'//trim(nstr), &
+          !                             sal_ice_tmp(:,:,:,n), domain=sGD%mpp_domain, &
+          !                             mandatory=.false., read_only=.true.)
+          !call restore_state(Ice%Ice_restart, id_sal, directory=dirs%restart_input_dir)
         enddo
 
         if (is_registered_to_restart(restart_fileobj_read_slow, 'sal_ice1')) then
@@ -2429,20 +2429,20 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
 
         call fms2_register_restart_field(restart_fileobj_read_slow, 't_snow', t_snow_tmp(:,:,:), &
           dimensions=(/"xaxis_1","yaxis_1","zaxis_2","Time   "/))
-        !call read_data(restart_fileobj_read_slow,'t_snow',t_snow_tmp)
-        idr = register_restart_field(Ice%Ice_restart, restart_file, 't_snow', t_snow_tmp, &
-                                     domain=sGD%mpp_domain, mandatory=.false., read_only=.true.)
-        call restore_state(Ice%Ice_restart, idr, directory=dirs%restart_input_dir)
+        call read_data(restart_fileobj_read_slow,'t_snow',t_snow_tmp)
+        !idr = register_restart_field(Ice%Ice_restart, restart_file, 't_snow', t_snow_tmp, &
+        !                             domain=sGD%mpp_domain, mandatory=.false., read_only=.true.)
+        !call restore_state(Ice%Ice_restart, idr, directory=dirs%restart_input_dir)
 
         do n=1,NkIce
           write(nstr, '(I4)') n ; nstr = adjustl(nstr)
           !call fms2_register_restart_field(restart_fileobj_read_slow, 't_ice'//trim(nstr), t_ice_tmp(:,:,:,n), &
           !                    dimensions=(/"xaxis_1","yaxis_1","zaxis_2","Time   "/))
-          !call read_data(restart_fileobj_read_slow, 't_ice'//trim(nstr), t_ice_tmp(:,:,:,n))
-          idr = register_restart_field(Ice%Ice_restart, restart_file, 't_ice'//trim(nstr), &
-                                       t_ice_tmp(:,:,:,n), domain=sGD%mpp_domain, &
-                                       mandatory=.false., read_only=.true.)
-          call restore_state(Ice%Ice_restart, idr, directory=dirs%restart_input_dir)
+          call read_data(restart_fileobj_read_slow, 't_ice'//trim(nstr), t_ice_tmp(:,:,:,n))
+          !idr = register_restart_field(Ice%Ice_restart, restart_file, 't_ice'//trim(nstr), &
+          !                             t_ice_tmp(:,:,:,n), domain=sGD%mpp_domain, &
+          !                             mandatory=.false., read_only=.true.)
+          !call restore_state(Ice%Ice_restart, idr, directory=dirs%restart_input_dir)
         enddo
       endif
 
@@ -2773,7 +2773,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
       ! Read the fast restart file, if it exists.
       fast_rest_path = trim(dirs%restart_input_dir)//trim(fast_rest_file)
       if (file_exists(fast_rest_path)) then
-        call restore_state(Ice%Ice_fast_restart, directory=dirs%restart_input_dir)
+        !call restore_state(Ice%Ice_fast_restart, directory=dirs%restart_input_dir)
 
         ! register the axes to the restart file object
         if (split_restart_files) then
@@ -2785,7 +2785,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
           !call ice_rad_register_restarts(fGD%mpp_domain, fHI, Ice%fCS%IG, param_file, &
           !                           Ice%fCS%Rad, restart_fileobj_read_fast, trim(fast_rest_path))
 
-          !call read_restart(restart_fileobj_read_fast)
+          call read_restart(restart_fileobj_read_fast)
 
           init_coszen = .not.is_registered_to_restart(restart_fileobj_read_fast, 'coszen')
           init_Tskin = .not.is_registered_to_restart(restart_fileobj_read_fast, 'T_skin')
@@ -2794,7 +2794,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                               is_registered_to_restart(restart_fileobj_read_fast, 'rough_moist'))
         else
           !>@NOTE root pe broadcasts data read in to all pes, so is is unnecessary to read from the file again
-          !call read_restart(restart_fileobj_read_slow)
+          call read_restart(restart_fileobj_read_slow)
           init_coszen = .not.is_registered_to_restart(restart_fileobj_read_slow, 'coszen')
           init_Tskin = .not.is_registered_to_restart(restart_fileobj_read_slow, 'T_skin')
           init_rough  = .not.(is_registered_to_restart(restart_fileobj_read_slow, 'rough_mom') .and. &
