@@ -58,6 +58,11 @@ public :: translate_OSS_to_sOSS
 integer, parameter :: NBANDS=4 !< the number of 4-D arrays for shortwave radiation and
 !! albedos within SIS2.
 
+interface ice_state_register_restarts
+  module procedure ice_state_register_restarts_new_io
+  module procedure ice_state_register_restarts_old_io
+end interface ice_state_register_restarts
+
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> This structure contains the ice model state, and is intended to be private
 !! to SIS2.  It is not to be shared with other components and modules, and may
@@ -483,7 +488,7 @@ end subroutine alloc_IST_arrays
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> ice_state_register_restarts registers any variables in the ice state type
 !!     that need to be includedin the restart files.
-subroutine ice_state_register_restarts(IST, G, IG, restart_fileobj, restart_file, nc_mode)
+subroutine ice_state_register_restarts_new_io(IST, G, IG, restart_fileobj, restart_file, nc_mode)
   type(ice_state_type),    intent(inout) :: IST !< A type describing the state of the sea ice
   type(SIS_hor_grid_type), intent(in)    :: G   !< The horizontal grid type
   type(ice_grid_type),     intent(in)    :: IG  !< The sea-ice specific grid type
@@ -653,7 +658,82 @@ subroutine ice_state_register_restarts(IST, G, IG, restart_fileobj, restart_file
   if (allocated(dim_names)) deallocate(dim_names)
   if (allocated(dim_lengths)) deallocate(dim_lengths)
 
-end subroutine ice_state_register_restarts
+end subroutine ice_state_register_restarts_new_io
+
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> ice_state_register_restarts registers any variables in the ice state type
+!!     that need to be includedin the restart files.
+subroutine ice_state_register_restarts_old_io(IST, G, IG, Ice_restart, restart_file)
+  type(ice_state_type),    intent(inout) :: IST !< A type describing the state of the sea ice
+  type(SIS_hor_grid_type), intent(in)    :: G   !< The horizontal grid type
+  type(ice_grid_type),     intent(in)    :: IG  !< The sea-ice specific grid type
+  type(restart_file_type), pointer       :: Ice_restart !< A pointer to the restart type for the ice
+  character(len=*),        intent(in)    :: restart_file !< The name of the ice restart file
+
+  integer :: idr
+  type(domain2d), pointer :: mpp_domain => NULL()
+  mpp_domain => G%Domain%mpp_domain
+
+  ! Now register some of these arrays to be read from the restart files.
+  if (associated(Ice_restart)) then
+    idr = register_restart_field(Ice_restart, restart_file, 'part_size', IST%part_size, domain=mpp_domain)
+    if (allocated(IST%t_surf)) then
+      idr = register_restart_field(Ice_restart, restart_file, 't_surf_ice', IST%t_surf, &
+                                 domain=mpp_domain, mandatory=.false., units="deg K")
+    endif
+    idr = register_restart_field(Ice_restart, restart_file, 'h_pond', IST%mH_pond, & ! mw/new
+                                 domain=mpp_domain, mandatory=.false., units="H_to_kg_m2 kg m-2")
+    idr = register_restart_field(Ice_restart, restart_file, 'h_snow', IST%mH_snow, &
+                                 domain=mpp_domain, mandatory=.true., units="H_to_kg_m2 kg m-2")
+    idr = register_restart_field(Ice_restart, restart_file, 'enth_snow', IST%enth_snow, &
+                                 domain=mpp_domain, mandatory=.false.)
+    idr = register_restart_field(Ice_restart, restart_file, 'h_ice',  IST%mH_ice, &
+                                 domain=mpp_domain, mandatory=.true., units="H_to_kg_m2 kg m-2")
+    idr = register_restart_field(Ice_restart, restart_file, 'H_to_kg_m2', IG%H_to_kg_m2, &
+                                 longname="The conversion factor from SIS2 mass-thickness units to kg m-2.", &
+                                 no_domain=.true., mandatory=.false.)
+
+    idr = register_restart_field(Ice_restart, restart_file, 'enth_ice', IST%enth_ice, &
+                                 domain=mpp_domain, mandatory=.false., units="J kg-1")
+    idr = register_restart_field(Ice_restart, restart_file, 'sal_ice', IST%sal_ice, &
+                                 domain=mpp_domain, mandatory=.false., units="kg/kg")
+
+    if (allocated(IST%snow_to_ocn)) then
+      idr = register_restart_field(Ice_restart, restart_file, 'snow_to_ocn', IST%snow_to_ocn, &
+                                   domain=mpp_domain, mandatory=.false., units="kg m-2")
+      idr = register_restart_field(Ice_restart, restart_file, 'enth_snow_to_ocn', IST%enth_snow_to_ocn, &
+                                   domain=mpp_domain, mandatory=.false., units="J kg-1")
+    endif
+
+    if (IST%Cgrid_dyn) then
+      if (G%symmetric) then
+        idr = register_restart_field(Ice_restart, restart_file, 'sym_u_ice_C', IST%u_ice_C, &
+                                     domain=mpp_domain, position=EAST, mandatory=.false.)
+        idr = register_restart_field(Ice_restart, restart_file, 'sym_v_ice_C', IST%v_ice_C, &
+                                     domain=mpp_domain, position=NORTH, mandatory=.false.)
+      else
+        idr = register_restart_field(Ice_restart, restart_file, 'u_ice_C', IST%u_ice_C, &
+                                     domain=mpp_domain, position=EAST, mandatory=.false.)
+        idr = register_restart_field(Ice_restart, restart_file, 'v_ice_C', IST%v_ice_C, &
+                                     domain=mpp_domain, position=NORTH, mandatory=.false.)
+      endif
+    else
+      if (G%symmetric) then
+        idr = register_restart_field(Ice_restart, restart_file, 'sym_u_ice_B',   IST%u_ice_B, &
+                                     domain=mpp_domain, position=CORNER, mandatory=.false.)
+        idr = register_restart_field(Ice_restart, restart_file, 'sym_v_ice_B',   IST%v_ice_B, &
+                                     domain=mpp_domain, position=CORNER, mandatory=.false.)
+      else
+        idr = register_restart_field(Ice_restart, restart_file, 'u_ice',   IST%u_ice_B, &
+                                     domain=mpp_domain, position=CORNER, mandatory=.false.)
+        idr = register_restart_field(Ice_restart, restart_file, 'v_ice',   IST%v_ice_B, &
+                                     domain=mpp_domain, position=CORNER, mandatory=.false.)
+      endif
+    endif
+  endif
+
+end subroutine ice_state_register_restarts_old_io
+
 
 subroutine register_unit_conversion_restarts(US, restart_fileobj, restart_file, nc_mode)
   type(unit_scale_type),   intent(inout) :: US    !< A structure with unit conversion factors
