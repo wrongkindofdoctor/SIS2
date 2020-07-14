@@ -40,12 +40,12 @@ public :: rescale_fast_to_slow_restart_fields, rescale_ice_state_restart_fields
 public :: ice_ocean_flux_type, alloc_ice_ocean_flux, dealloc_ice_ocean_flux
 public :: ocean_sfc_state_type, alloc_ocean_sfc_state, dealloc_ocean_sfc_state
 public :: fast_ice_avg_type, alloc_fast_ice_avg, dealloc_fast_ice_avg, copy_FIA_to_FIA
-public :: IOF_chksum, FIA_chksum, register_unit_conversion_restarts
+public :: OSS_chksum, IOF_chksum, FIA_chksum, register_unit_conversion_restarts
 public :: ice_rad_type, ice_rad_register_restarts, dealloc_ice_rad
 public :: simple_OSS_type, alloc_simple_OSS, dealloc_simple_OSS, copy_sOSS_to_sOSS
 public :: redistribute_IST_to_IST, redistribute_FIA_to_FIA, redistribute_sOSS_to_sOSS
 public :: total_sfc_flux_type, alloc_total_sfc_flux, dealloc_total_sfc_flux
-public :: copy_TSF_to_TSF, redistribute_TSF_to_TSF
+public :: copy_TSF_to_TSF, redistribute_TSF_to_TSF, TSF_chksum
 public :: copy_Rad_to_Rad, redistribute_Rad_to_Rad, alloc_ice_Rad
 public :: translate_OSS_to_sOSS
 
@@ -367,7 +367,10 @@ type ice_ocean_flux_type
     stress_mag, &      !< The area-weighted time-mean of the magnitude of the stress on the ocean [R Z L T-2 ~> Pa].
     melt_nudge, &      !< A downward fresh water flux into the ocean that acts to nudge the ocean
                        !! surface salinity to facilitate the retention of sea ice [R Z T-1 ~> kg m-2 s-1].
-    flux_salt, &       !< The flux of salt out of the ocean [kgSalt kg-1 R Z T-1 ~> kgSalt m-2].
+    flux_salt, &       !< The flux of salt out of the ocean [kgSalt kg-1 R Z T-1 ~> kgSalt m-2 s-1].
+    transmutation_salt_flux, & !< The difference between the salt flux extracted from the ice and the
+                       !! salt flux added to the ocean when the ice is transmuted directly into seawater
+                       !! as a form of open boundary condition [kgSalt kg-1 R Z T-1 ~> kgSalt m-2 s-1].
     mass_ice_sn_p, &   !< The combined mass per unit ocean area of ice, snow and pond water [R Z ~> kg m-2].
     pres_ocn_top       !< The hydrostatic pressure at the ocean surface due to the weight of ice,
                        !! snow and ponds, exclusive of atmospheric pressure [R Z L T-2 ~> Pa].
@@ -394,8 +397,11 @@ type ice_ocean_flux_type
     Enth_Mass_out_atm, & !< Negative of the enthalpy extracted from the ice by water fluxes to
                          !! the atmosphere [Q R Z ~> J m-2].
     Enth_Mass_in_ocn , & !< The enthalpy introduced to the ice by water fluxes from the ocean [Q R Z ~> J m-2].
-    Enth_Mass_out_ocn    !< Negative of the enthalpy extracted from the ice by water fluxes to
+    Enth_Mass_out_ocn, & !< Negative of the enthalpy extracted from the ice by water fluxes to
                          !! the ocean [Q R Z ~> J m-2].
+    transmutation_enth   !< The difference between the enthalpy extracted from the ice and the
+                         !! enthalpy added to the ocean when the ice is transmuted directly into
+                         !! seawater as a form of open boundary condition [Q R Z ~> J m-2].
 
   integer :: stress_count !< The number of times that the stresses from the ice to the ocean have been incremented.
   integer :: flux_uv_stagger = -999 !< The staggering relative to the tracer points of the two wind
@@ -430,6 +436,7 @@ subroutine alloc_IST_arrays(HI, IG, IST, omit_velocities, omit_Tsurf, do_ridging
   logical,    optional, intent(in)    :: omit_Tsurf !< If true, do not allocate the surface temperature array
   logical,    optional, intent(in)    :: do_ridging !< If true, allocate arrays related to ridging
 
+  real, parameter :: T_0degC = 273.15 ! 0 degrees C in Kelvin
   integer :: isd, ied, jsd, jed, CatIce, NkIce, idr
   logical :: do_vel, do_Tsurf
 
@@ -451,6 +458,7 @@ subroutine alloc_IST_arrays(HI, IG, IST, omit_velocities, omit_Tsurf, do_ridging
   if (present(do_ridging)) then ; if (do_ridging) then
     allocate(IST%snow_to_ocn(isd:ied, jsd:jed)) ; IST%snow_to_ocn(:,:) = 0.0
     allocate(IST%enth_snow_to_ocn(isd:ied, jsd:jed)) ; IST%enth_snow_to_ocn(:,:) = 0.0
+    allocate(IST%rdg_mice(isd:ied, jsd:jed, CatIce)) ; IST%rdg_mice(:,:,:) = 0.0
   endif ; endif
 
   if (do_vel) then
@@ -462,14 +470,11 @@ subroutine alloc_IST_arrays(HI, IG, IST, omit_velocities, omit_Tsurf, do_ridging
       allocate(IST%u_ice_B(SZIB_(HI), SZJB_(HI))) ; IST%u_ice_B(:,:) = 0.0
       allocate(IST%v_ice_B(SZIB_(HI), SZJB_(HI))) ; IST%v_ice_B(:,:) = 0.0
     endif
-
-    ! ### THESE ARE DIAGNOSTICS.  PERHAPS THEY SHOULD ONLY BE ALLOCATED IF USED.
-    allocate(IST%rdg_mice(isd:ied, jsd:jed, CatIce)) ; IST%rdg_mice(:,:,:) = 0.0
   endif
 
   if (do_Tsurf) then
     ! IST%tsurf is only used with some older options.
-    allocate(IST%t_surf(isd:ied, jsd:jed, CatIce)) ; IST%t_surf(:,:,:) = 0.0
+    allocate(IST%t_surf(isd:ied, jsd:jed, CatIce)) ; IST%t_surf(:,:,:) = T_0degC
   endif
 
 end subroutine alloc_IST_arrays
@@ -724,14 +729,18 @@ end subroutine ice_state_read_alt_restarts
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> rescale_ice_state_restart_fields handles any changes in dimensional rescaling of ice state
 !! variables between what is stored in the restart file and what is done for the current run segment.
-subroutine rescale_ice_state_restart_fields(IST, G, US, IG)
+subroutine rescale_ice_state_restart_fields(IST, G, US, IG, H_to_kg_m2, Rho_ice, Rho_snow)
   type(ice_state_type),    intent(inout) :: IST !< A type describing the state of the sea ice
   type(SIS_hor_grid_type), intent(in)    :: G   !< The horizontal grid type
   type(unit_scale_type),   intent(in)    :: US  !< A structure with unit conversion factors
   type(ice_grid_type),     intent(in)    :: IG  !< The sea-ice specific grid type
+  real,                    intent(in)    :: H_to_kg_m2 !< The mass conversion_factor that will be
+                                                     !! used for the run [kg m-2 H-1 ~> 1].
+  real,                    intent(in)    :: Rho_ice  !< The nominal density of ice [R ~> kg m-2]
+  real,                    intent(in)    :: Rho_snow !< The nominal density of snow [R ~> kg m-2]
 
   ! Local variables
-  real :: vel_rescale, Q_rescale, RZ_rescale
+  real :: vel_rescale, Q_rescale, RZ_rescale, H_rescale_ice, H_rescale_snow
   integer :: i, j, k, m
 
   ! Redo the dimensional rescaling of the ice state type variables as necessary.
@@ -750,6 +759,27 @@ subroutine rescale_ice_state_restart_fields(IST, G, US, IG)
       (US%kg_m3_to_R*US%m_to_Z) /= (US%kg_m3_to_R_restart*US%m_to_Z_restart)) &
     RZ_rescale = (US%kg_m3_to_R*US%m_to_Z) / (US%kg_m3_to_R_restart*US%m_to_Z_restart)
 
+  ! Determine the thickness rescaling factors that are needed.
+  H_rescale_ice = 1.0 ; H_rescale_snow = 1.0
+  if (IG%H_to_kg_m2 == -1.0) then
+    ! This is an older restart file, and the snow and ice thicknesses are in m.
+    H_rescale_ice = US%R_to_kg_m3*Rho_ice / H_to_kg_m2
+    H_rescale_snow = US%R_to_kg_m3*Rho_snow / H_to_kg_m2
+  elseif (IG%H_to_kg_m2 /= H_to_kg_m2) then
+    H_rescale_ice = IG%H_to_kg_m2 / H_to_kg_m2
+    H_rescale_snow = H_rescale_ice
+  endif
+
+  if (H_rescale_ice /= 1.0) then
+    do k=1,IG%CatIce ; do j=G%jsc,G%jec ; do i=G%isc,G%iec
+      IST%mH_ice(i,j,k) = H_rescale_ice * IST%mH_ice(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+  if (H_rescale_snow /= 1.0) then
+    do k=1,IG%CatIce ; do j=G%jsc,G%jec ; do i=G%isc,G%iec
+      IST%mH_snow(i,j,k) = H_rescale_snow * IST%mH_snow(i,j,k)
+    enddo ; enddo ; enddo
+  endif
 
   if (IST%Cgrid_dyn .and. (vel_rescale /= 1.0)) then
     do j=G%jsc,G%jec ; do I=G%isc-1,G%iec
@@ -1045,7 +1075,7 @@ end subroutine alloc_ice_rad
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> alloc_ice_ocean_flux allocates and zeros out the arrays in an ice_ocean_flux_type.
-subroutine alloc_ice_ocean_flux(IOF, HI, do_stress_mag, do_iceberg_fields)
+subroutine alloc_ice_ocean_flux(IOF, HI, do_stress_mag, do_iceberg_fields, do_transmute)
   type(ice_ocean_flux_type), pointer    :: IOF !< A structure containing fluxes from the ice to
                                                !! the ocean that are calculated by the ice model.
   type(hor_index_type),      intent(in) :: HI  !< The horizontal index type describing the domain
@@ -1053,7 +1083,9 @@ subroutine alloc_ice_ocean_flux(IOF, HI, do_stress_mag, do_iceberg_fields)
                                                !! the magnitude of the ice-ocean stress.
   logical,         optional, intent(in) :: do_iceberg_fields !< If true, allocate fields related
                                                !! to exchanges with icebergs
-
+  logical,         optional, intent(in) :: do_transmute !< If true, allocate fields related to
+                                               !! transmuting ice directly into seawater as a form
+                                               !! of open boundary condition
   integer :: CatIce
   logical :: alloc_bergs, alloc_stress_mag
 
@@ -1063,6 +1095,9 @@ subroutine alloc_ice_ocean_flux(IOF, HI, do_stress_mag, do_iceberg_fields)
   if (.not.associated(IOF)) allocate(IOF)
 
   allocate(IOF%flux_salt(SZI_(HI), SZJ_(HI))) ; IOF%flux_salt(:,:) = 0.0
+  if (do_transmute) then
+    allocate(IOF%transmutation_salt_flux(SZI_(HI), SZJ_(HI))) ; IOF%transmutation_salt_flux(:,:) = 0.0
+  endif
 
   allocate(IOF%flux_sh_ocn_top(SZI_(HI), SZJ_(HI))) ;  IOF%flux_sh_ocn_top(:,:) = 0.0
   allocate(IOF%evap_ocn_top(SZI_(HI), SZJ_(HI))) ;  IOF%evap_ocn_top(:,:) = 0.0
@@ -1083,7 +1118,9 @@ subroutine alloc_ice_ocean_flux(IOF, HI, do_stress_mag, do_iceberg_fields)
   allocate(IOF%Enth_Mass_out_atm(SZI_(HI), SZJ_(HI))) ; IOF%Enth_Mass_out_atm(:,:) = 0.0
   allocate(IOF%Enth_Mass_in_ocn(SZI_(HI), SZJ_(HI)))  ; IOF%Enth_Mass_in_ocn(:,:) = 0.0
   allocate(IOF%Enth_Mass_out_ocn(SZI_(HI), SZJ_(HI))) ; IOF%Enth_Mass_out_ocn(:,:) = 0.0
-
+  if (do_transmute) then
+    allocate(IOF%transmutation_enth(SZI_(HI), SZJ_(HI))) ; IOF%transmutation_enth(:,:) = 0.0
+  endif
   ! Allocating iceberg fields (only used if pass_iceberg_area_to_ocean=.True.)
   ! Please note that these are only allocated on the computational domain so that they
   ! can be passed conveniently to the iceberg code.
@@ -1222,8 +1259,7 @@ subroutine copy_IST_to_IST(IST_in, IST_out, HI_in, HI_out, IG)
     IST_out%sal_ice(i2,j2,k,m) = IST_in%sal_ice(i,j,k,m)
   enddo ; enddo ; enddo ; enddo
 
-  ! The velocity components, rdg_mice, TrReg, and ITV are deliberately not being
-  ! copied.
+  ! The velocity components, rdg_mice, TrReg, and ITV are deliberately not being copied.
 
 end subroutine copy_IST_to_IST
 
@@ -1239,8 +1275,7 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
   real, pointer, dimension(:,:,:) :: null_ptr3D => NULL()
   real, pointer, dimension(:,:,:,:) :: null_ptr4D => NULL()
 
-  ! The velocity components, rdg_mice, TrReg, and ITV are deliberately not being
-  ! copied.
+  ! The velocity components, rdg_mice, TrReg, and ITV are deliberately not being copied.
   if (associated(IST_out) .and. associated(IST_in)) then
     call mpp_redistribute(domain_in, IST_in%part_size, domain_out, &
                           IST_out%part_size, complete=.true.)
@@ -2328,9 +2363,11 @@ subroutine dealloc_ice_ocean_flux(IOF)
   deallocate(IOF%lprec_ocn_top, IOF%fprec_ocn_top, IOF%flux_salt)
   deallocate(IOF%flux_u_ocn, IOF%flux_v_ocn, IOF%pres_ocn_top, IOF%mass_ice_sn_p)
   if (allocated(IOF%stress_mag)) deallocate(IOF%stress_mag)
+  if (allocated(IOF%transmutation_salt_flux)) deallocate(IOF%transmutation_salt_flux)
 
   deallocate(IOF%Enth_Mass_in_atm, IOF%Enth_Mass_out_atm)
   deallocate(IOF%Enth_Mass_in_ocn, IOF%Enth_Mass_out_ocn)
+  if (allocated(IOF%transmutation_enth)) deallocate(IOF%transmutation_enth)
 
   !Deallocating iceberg fields
   if (associated(IOF%mass_berg)) deallocate(IOF%mass_berg)
@@ -2342,32 +2379,53 @@ end subroutine dealloc_ice_ocean_flux
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> Perform checksums on various arrays in an ice_ocean_flux_type.
-subroutine IOF_chksum(mesg, IOF, G, US)
+subroutine IOF_chksum(mesg, IOF, G, US, mech_fluxes, thermo_fluxes)
   character(len=*),          intent(in) :: mesg  !< A message that appears on the chksum lines.
   type(ice_ocean_flux_type), intent(in) :: IOF   !< The structure whose arrays are being checksummed.
   type(SIS_hor_grid_type),   intent(inout) :: G  !< The ice-model's horizonal grid type.
   type(unit_scale_type),     intent(in)    :: US !< A structure with unit conversion factors
+  logical,         optional, intent(in)    :: mech_fluxes !< If true, do checksums of mechanical fluxes
+  logical,         optional, intent(in)    :: thermo_fluxes !< If true, do checksums of thermodynamic fluxes
 
-  call hchksum(IOF%flux_salt, trim(mesg)//" IOF%flux_salt", G%HI, scale=US%RZ_T_to_kg_m2s)
+  logical :: do_mech, do_thermo
 
-  call hchksum(IOF%flux_sh_ocn_top, trim(mesg)//"  IOF%flux_sh_ocn_top", G%HI, scale=US%QRZ_T_to_W_m2)
-  call hchksum(IOF%evap_ocn_top, trim(mesg)//"  IOF%evap_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s)
-  call hchksum(IOF%flux_lw_ocn_top, trim(mesg)//" IOF%flux_lw_ocn_top", G%HI, scale=US%QRZ_T_to_W_m2)
-  call hchksum(IOF%flux_lh_ocn_top, trim(mesg)//" IOF%flux_lh_ocn_top", G%HI, scale=US%QRZ_T_to_W_m2)
-  call hchksum(IOF%flux_sw_ocn, trim(mesg)//"  IOF%flux_sw_ocn", G%HI, scale=US%QRZ_T_to_W_m2)
-  call hchksum(IOF%lprec_ocn_top, trim(mesg)//"  IOF%lprec_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s)
-  call hchksum(IOF%fprec_ocn_top, trim(mesg)//"  IOF%fprec_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s)
-  call hchksum(IOF%flux_u_ocn, trim(mesg)//"  IOF%flux_u_ocn", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(IOF%flux_v_ocn, trim(mesg)//"  IOF%flux_v_ocn", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(IOF%pres_ocn_top, trim(mesg)//" IOF%pres_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(IOF%mass_ice_sn_p, trim(mesg)//" IOF%mass_ice_sn_p", G%HI, scale=US%RZ_to_kg_m2)
-  if (allocated(IOF%stress_mag)) &
-    call hchksum(IOF%stress_mag, trim(mesg)//"  IOF%stress_mag", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+  ! Do all fluxes unless a subset of fluxes are specified, in which case only do those that are
+  ! indicated by the arguments.
+  do_mech = .not.present(thermo_fluxes) ; do_thermo = .not.present(mech_fluxes)
+  if (present(mech_fluxes)) then ; do_mech = mech_fluxes ; endif
+  if (present(thermo_fluxes)) then ; do_thermo = thermo_fluxes ; endif
 
-  call hchksum(IOF%Enth_Mass_in_atm, trim(mesg)//" IOF%Enth_Mass_in_atm", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
-  call hchksum(IOF%Enth_Mass_out_atm, trim(mesg)//" IOF%Enth_Mass_out_atm", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
-  call hchksum(IOF%Enth_Mass_in_ocn, trim(mesg)//" IOF%Enth_Mass_in_ocn", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
-  call hchksum(IOF%Enth_Mass_out_ocn, trim(mesg)//" IOF%Enth_Mass_out_ocn", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+  if (do_thermo) then
+    call hchksum(IOF%flux_salt, trim(mesg)//" IOF%flux_salt", G%HI, scale=US%RZ_T_to_kg_m2s)
+    if (allocated(IOF%transmutation_salt_flux)) call hchksum(IOF%transmutation_salt_flux, &
+          trim(mesg)//" IOF%transmutation_salt_flux", G%HI, scale=US%RZ_T_to_kg_m2s)
+
+    call hchksum(IOF%flux_sh_ocn_top, trim(mesg)//" IOF%flux_sh_ocn_top", G%HI, scale=US%QRZ_T_to_W_m2)
+    call hchksum(IOF%flux_lw_ocn_top, trim(mesg)//" IOF%flux_lw_ocn_top", G%HI, scale=US%QRZ_T_to_W_m2)
+    call hchksum(IOF%flux_lh_ocn_top, trim(mesg)//" IOF%flux_lh_ocn_top", G%HI, scale=US%QRZ_T_to_W_m2)
+    call hchksum(IOF%flux_sw_ocn,     trim(mesg)//" IOF%flux_sw_ocn",     G%HI, scale=US%QRZ_T_to_W_m2)
+    call hchksum(IOF%evap_ocn_top,    trim(mesg)//" IOF%evap_ocn_top",  G%HI, scale=US%RZ_T_to_kg_m2s)
+    call hchksum(IOF%lprec_ocn_top,   trim(mesg)//" IOF%lprec_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s)
+    call hchksum(IOF%fprec_ocn_top,   trim(mesg)//" IOF%fprec_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s)
+  endif
+  if (do_mech) then
+    call hchksum(IOF%flux_u_ocn,      trim(mesg)//" IOF%flux_u_ocn",   G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+    call hchksum(IOF%flux_v_ocn,      trim(mesg)//" IOF%flux_v_ocn",   G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+    call hchksum(IOF%pres_ocn_top,    trim(mesg)//" IOF%pres_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+    call hchksum(IOF%mass_ice_sn_p,   trim(mesg)//" IOF%mass_ice_sn_p", G%HI, scale=US%RZ_to_kg_m2)
+    if (allocated(IOF%stress_mag)) &
+      call hchksum(IOF%stress_mag,    trim(mesg)//" IOF%stress_mag", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+  endif
+
+  if (do_thermo) then
+    call hchksum(IOF%Enth_Mass_in_atm,  trim(mesg)//" IOF%Enth_Mass_in_atm",  G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+    call hchksum(IOF%Enth_Mass_out_atm, trim(mesg)//" IOF%Enth_Mass_out_atm", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+    call hchksum(IOF%Enth_Mass_in_ocn,  trim(mesg)//" IOF%Enth_Mass_in_ocn",  G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+    call hchksum(IOF%Enth_Mass_out_ocn, trim(mesg)//" IOF%Enth_Mass_out_ocn", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+
+    if (allocated(IOF%transmutation_enth)) call hchksum(IOF%transmutation_enth, &
+          trim(mesg)//" IOF%transmutation_enth", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+  endif
 end subroutine IOF_chksum
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
@@ -2426,6 +2484,73 @@ subroutine FIA_chksum(mesg, FIA, G, US, check_ocean)
   call hchksum(FIA%flux_sw_dn, trim(mesg)//" FIA%flux_sw_dn", G%HI, scale=US%QRZ_T_to_W_m2)
 
 end subroutine FIA_chksum
+
+
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> Perform checksums on various arrays in an ocean_surface_state_type.
+subroutine OSS_chksum(mesg, OSS, G, US, haloshift)
+  character(len=*),           intent(in) :: mesg  !< A message that appears on the chksum lines.
+  type(ocean_sfc_state_type), intent(in) :: OSS   !< A structure containing the arrays that describe
+                                                  !! the ocean's surface state for the ice model.
+  type(SIS_hor_grid_type), intent(inout) :: G     !< The ice-model's horizonal grid type.
+  type(unit_scale_type),      intent(in) :: US    !< A structure with unit conversion factors
+  integer,          optional, intent(in) :: haloshift !< The width of halos to check, or 0 if missing.
+
+  ! Local variables
+  integer :: hs
+
+  ! Note that for the chksum calls to be useful for reproducing across PE
+  ! counts, there must be no redundant points, so all variables use is..ie
+  ! and js...je as their extent.
+  hs=0 ; if (present(haloshift)) hs=haloshift
+
+  call hchksum(OSS%s_surf, trim(mesg)//" OSS%s_surf", G%HI, haloshift=hs)
+  call hchksum(OSS%SST_C, trim(mesg)//" OSS%SST_C", G%HI, haloshift=hs)
+  call hchksum(OSS%T_fr_ocn, trim(mesg)//" OSS%T_fr_ocn", G%HI, haloshift=hs)
+  call hchksum(OSS%sea_lev, trim(mesg)//" OSS%sea_lev", G%HI, haloshift=hs, scale=US%Z_to_m)
+  call hchksum(OSS%bheat, trim(mesg)//" OSS%bheat", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
+  call hchksum(OSS%frazil, trim(mesg)//" OSS%frazil", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+
+  if (OSS%Cgrid_dyn) then
+    call uvchksum(mesg//" OSS%[uv]_ocn_C", OSS%u_ocn_C, OSS%v_ocn_C, G, halos=hs, scale=US%L_T_to_m_s)
+    call check_redundant_C(mesg//" OSS%u/v_ocn_C", OSS%u_ocn_C, OSS%v_ocn_C, G)
+  else
+    call Bchksum_pair(mesg//" OSS%[uv]_ocn_B", OSS%u_ocn_B, OSS%v_ocn_B, G, halos=hs, scale=US%L_T_to_m_s)
+    call check_redundant_B(mesg//" OSS%u/v_ocn", OSS%u_ocn_B, OSS%v_ocn_B, G)
+  endif
+
+end subroutine OSS_chksum
+
+
+
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+!> Perform checksums on various arrays in an total_sfc_flux_type.
+subroutine TSF_chksum(mesg, TSF, G, US, haloshift)
+  character(len=*),           intent(in) :: mesg  !< A message that appears on the chksum lines.
+  type(total_sfc_flux_type),  pointer    :: TSF   !< The total_sfc_flux_type being checksummed.
+  type(SIS_hor_grid_type), intent(inout) :: G     !< The ice-model's horizonal grid type.
+  type(unit_scale_type),      intent(in) :: US    !< A structure with unit conversion factors
+  integer,          optional, intent(in) :: haloshift !< The width of halos to check, or 0 if missing.
+
+  ! Local variables
+  integer :: hs, nb
+
+  ! Note that for the chksum calls to be useful for reproducing across PE
+  ! counts, there must be no redundant points, so all variables use is..ie
+  ! and js...je as their extent.
+  hs=0 ; if (present(haloshift)) hs=haloshift
+
+  call hchksum(TSF%flux_sh, trim(mesg)//" TSF%flux_sh", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
+  ! call hchksum(TSF%flux_sw, trim(mesg)//" TSF%flux_sw", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
+  call hchksum(TSF%flux_lw, trim(mesg)//" TSF%flux_lw", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
+  call hchksum(TSF%flux_lh, trim(mesg)//" TSF%flux_lh", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
+  call hchksum(TSF%evap, trim(mesg)//" TSF%evap", G%HI, haloshift=hs, scale=US%RZ_T_to_kg_m2s)
+  call hchksum(TSF%lprec, trim(mesg)//" TSF%lprec", G%HI, haloshift=hs, scale=US%RZ_T_to_kg_m2s)
+  call hchksum(TSF%fprec, trim(mesg)//" TSF%fprec", G%HI, haloshift=hs, scale=US%RZ_T_to_kg_m2s)
+  call uvchksum(mesg//" TSF%flux_[uv]", TSF%flux_u, TSF%flux_v, G, halos=hs, scale=US%L_T_to_m_s)
+
+end subroutine TSF_chksum
+
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> Perform checksums on various arrays in an ice_state_type.
